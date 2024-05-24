@@ -1,0 +1,19 @@
+[tool.poetry]
+name = "geist-pdu-exporter"
+version = "0.1.0"
+description = "Prometheus exporter for Geist PDUs"
+authors = ["drewburr <drewburr9@gmail.com>"]
+license = "Apache-2.0"
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = "^3.10"
+requests = "^2.32.2"
+prometheus-client = "^0.20.0"
+python-dotenv = "^1.0.1"
+xmltodict = "^0.13.0"
+
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
