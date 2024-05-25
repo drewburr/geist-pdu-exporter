@@ -23,10 +23,11 @@ class Exporter:
     application metrics into Prometheus metrics.
     """
 
-    def __init__(self, address, port, polling_interval_seconds):
+    def __init__(self, address, port, polling_interval_seconds, pdu_request_timeout):
         self.address = address
         self.port = port
         self.polling_interval_seconds = polling_interval_seconds
+        self.pdu_request_timeout = pdu_request_timeout
         self.logger = logging.getLogger(__name__)
 
         self.device_labels = ["id", "type"]
@@ -140,7 +141,7 @@ class Exporter:
         """
         Get metrics from PDU and return
         """
-        resp = requests.get(url=f"http://{self.address}:{self.port}/data.xml")
+        resp = requests.get(url=f"http://{self.address}:{self.port}/data.xml", timeout=self.pdu_request_timeout)
         root = ET.fromstring(resp.text)
         return root
 
@@ -157,11 +158,13 @@ def main():
     PDU_PORT = int(os.getenv("PDU_PORT", "80"))
     POLLING_INTERVAL_SECONDS = int(os.getenv("POLLING_INTERVAL_SECONDS", "5"))
     LISTEN_PORT = int(os.getenv("LISTEN_PORT", "9100"))
+    PDU_REQUEST_TIMEOUT = int(os.getenv("PDU_REQUEST_TIMEOUT", 5))
 
     exporter = Exporter(
         address=PDU_ADDRESS,
         port=PDU_PORT,
         polling_interval_seconds=POLLING_INTERVAL_SECONDS,
+        pdu_request_timeout=PDU_REQUEST_TIMEOUT
     )
     start_http_server(LISTEN_PORT)
     exporter.start_export_loop()
