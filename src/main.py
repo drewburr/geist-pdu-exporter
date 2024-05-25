@@ -141,7 +141,11 @@ class Exporter:
         """
         Get metrics from PDU and return
         """
-        resp = requests.get(url=f"http://{self.address}:{self.port}/data.xml", timeout=self.pdu_request_timeout)
+        try:
+            resp = requests.get(url=f"http://{self.address}:{self.port}/data.xml", timeout=self.pdu_request_timeout)
+        except requests.ConnectionError as e:
+            self.logger.warn(f"Exception while connecting to device: {e.strerror}")
+
         root = ET.fromstring(resp.text)
         return root
 
