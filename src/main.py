@@ -112,7 +112,6 @@ class Exporter:
             self.logger.error(e)
             return
 
-
         devices = root.find("devices")
 
         for device in devices:
@@ -152,11 +151,13 @@ class Exporter:
         Get metrics from PDU and returns XML root
         """
         try:
-            resp = requests.get(url=f"http://{self.address}:{self.port}/data.xml", timeout=self.pdu_request_timeout)
+            resp = requests.get(
+                url=f"http://{self.address}:{self.port}/data.xml",
+                timeout=self.pdu_request_timeout,
+            )
             return ET.fromstring(resp.text)
-        except (requests.RequestException) as e:
-            self.logger.warn(f"Exception while connecting to device: {e.strerror}")
-
+        except requests.RequestException as e:
+            self.logger.warning(f"Exception while connecting to device: {e.strerror}")
 
 
 def main():
@@ -177,7 +178,7 @@ def main():
         address=PDU_ADDRESS,
         port=PDU_PORT,
         polling_interval_seconds=POLLING_INTERVAL_SECONDS,
-        pdu_request_timeout=PDU_REQUEST_TIMEOUT
+        pdu_request_timeout=PDU_REQUEST_TIMEOUT,
     )
     start_http_server(LISTEN_PORT)
     exporter.start_export_loop()
