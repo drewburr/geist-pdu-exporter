@@ -102,7 +102,17 @@ class Exporter:
         Generate metrics and publish
         """
         self.logger.info("Starting process..")
-        root = self.fetch()
+
+        try:
+            root = self.fetch()
+            if not root:
+                return
+        except Exception as e:
+            self.logger.error("Exception while fetching metrics..")
+            self.logger.error(e)
+            return
+
+
         devices = root.find("devices")
 
         for device in devices:
@@ -139,15 +149,14 @@ class Exporter:
 
     def fetch(self):
         """
-        Get metrics from PDU and return
+        Get metrics from PDU and returns XML root
         """
         try:
             resp = requests.get(url=f"http://{self.address}:{self.port}/data.xml", timeout=self.pdu_request_timeout)
+            return ET.fromstring(resp.text)
         except (requests.RequestException) as e:
             self.logger.warn(f"Exception while connecting to device: {e.strerror}")
 
-        root = ET.fromstring(resp.text)
-        return root
 
 
 def main():
