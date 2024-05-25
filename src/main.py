@@ -8,7 +8,11 @@ import requests
 import xml.etree.ElementTree as ET
 from xml.etree.ElementTree import Element
 
-logging.basicConfig(format='%(asctime)s %(levelname)s: %(message)s', datefmt='%m/%d/%Y %I:%M:%S %p', level=logging.INFO)
+logging.basicConfig(
+    format="%(asctime)s %(levelname)s: %(message)s",
+    datefmt="%m/%d/%Y %I:%M:%S %p",
+    level=logging.INFO,
+)
 
 # pdu_
 
@@ -24,8 +28,6 @@ class Exporter:
         self.port = port
         self.polling_interval_seconds = polling_interval_seconds
         self.logger = logging.getLogger(__name__)
-
-
 
         self.device_labels = ["id", "type"]
         self.outlet_labels = ["name", "num", "url"]
@@ -91,13 +93,14 @@ class Exporter:
             start = time.time()
             self.process()
             end = time.time()
-            self.logger.info(f'Process completed in {end-start:.2f}s')
+            self.logger.info(f"Process completed in {end-start:.2f}s")
             time.sleep(self.polling_interval_seconds)
 
     def process(self):
         """
         Generate metrics and publish
         """
+        self.logger.info("Starting process..")
         root = self.fetch()
         devices = root.find("devices")
 
@@ -105,6 +108,7 @@ class Exporter:
             self.process_device(device)
 
     def process_device(self, device: Element):
+        self.logger.info(f"Processsing device {device.attrib['type']}")
         outlets = device.find("outlets")
         if not outlets:
             return
@@ -123,6 +127,7 @@ class Exporter:
             self.process_outlet(outlet, device_labels)
 
     def process_outlet(self, outlet: Element, device_labels: dict[str, str]):
+        self.logger.info(f"Processsing outlet {outlet.attrib['num']}")
         outlet_labels = {label: outlet.attrib[label] for label in self.outlet_labels}
         outlet_labels = {**outlet_labels, **device_labels}
 
