@@ -143,7 +143,7 @@ class Exporter:
         """
         try:
             resp = requests.get(url=f"http://{self.address}:{self.port}/data.xml", timeout=self.pdu_request_timeout)
-        except requests.ConnectionError as e:
+        except (requests.RequestException) as e:
             self.logger.warn(f"Exception while connecting to device: {e.strerror}")
 
         root = ET.fromstring(resp.text)
@@ -162,7 +162,7 @@ def main():
     PDU_PORT = int(os.getenv("PDU_PORT", "80"))
     POLLING_INTERVAL_SECONDS = int(os.getenv("POLLING_INTERVAL_SECONDS", "5"))
     LISTEN_PORT = int(os.getenv("LISTEN_PORT", "9100"))
-    PDU_REQUEST_TIMEOUT = int(os.getenv("PDU_REQUEST_TIMEOUT", 5))
+    PDU_REQUEST_TIMEOUT = int(os.getenv("PDU_REQUEST_TIMEOUT", 10))
 
     exporter = Exporter(
         address=PDU_ADDRESS,
