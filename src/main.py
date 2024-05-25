@@ -2,10 +2,13 @@
 
 import os
 import time
+import logging
 from prometheus_client import start_http_server, Gauge, Counter, Enum
 import requests
 import xml.etree.ElementTree as ET
 from xml.etree.ElementTree import Element
+
+logging.basicConfig(format='%(asctime)s %(levelname)s: %(message)s', datefmt='%m/%d/%Y %I:%M:%S %p', level=logging.INFO)
 
 # pdu_
 
@@ -20,6 +23,9 @@ class Exporter:
         self.address = address
         self.port = port
         self.polling_interval_seconds = polling_interval_seconds
+        self.logger = logging.getLogger(__name__)
+
+
 
         self.device_labels = ["id", "type"]
         self.outlet_labels = ["name", "num", "url"]
@@ -82,7 +88,10 @@ class Exporter:
         """Metrics fetching loop"""
 
         while True:
+            start = time.time()
             self.process()
+            end = time.time()
+            self.logger.info(f'Process completed in {end-start:.2f}s')
             time.sleep(self.polling_interval_seconds)
 
     def process(self):
