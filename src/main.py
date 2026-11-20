@@ -5,9 +5,11 @@ Supports two firmware families, auto-detected per target:
 * v3 ("RCU-O" / OWL web server) - exposes ``/data.xml``
 * v5+ ("R-Series", ``httpd 5.x``) - exposes a JSON API at ``/api/dev``
 
-Metrics are collected at scrape time (no background polling), so a scrape
-always reflects the device's current state and a dead PDU shows up as
-``pdu_up 0`` rather than as stale values.
+Each PDU is polled by its own background thread and scrapes serve the latest
+reading, so a slow PDU never delays or fails a Prometheus scrape (some v3
+units stall for several seconds every 5 minutes). Readings older than
+``PDU_MAX_AGE`` are dropped and reported as ``pdu_up 0`` rather than served
+as current.
 """
 
 from __future__ import annotations
@@ -18,13 +20,13 @@ import signal
 import threading
 import time
 import xml.etree.ElementTree as ET
-from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 
 import requests
 from prometheus_client import start_http_server
 from prometheus_client.core import (
     REGISTRY,
+    CounterMetricFamily,
     GaugeMetricFamily,
     StateSetMetricFamily,
 )
@@ -231,8 +233,12 @@ def parse_v5(payload: dict, pdu_name: str | None, model: str) -> list[Device]:
 # --------------------------------------------------------------------------
 
 
+
 class Target:
-    """A single PDU. Firmware family is detected on first contact and cached."""
+    """A single PDU, polled by its own background thread.
+
+    Firmware family is detected on first contact and cached.
+    """
 
     def __init__(self, address: str, name: str | None, port: int, timeout: float):
         self.address = address
@@ -242,7 +248,15 @@ class Target:
         self.session = requests.Session()
         self.firmware: str | None = None  # "v3" | "v5"
         self.model = ""
+
+        # Written only by the poller thread; read by collect(). Each field is
+        # replaced atomically, and devices/last_success are swapped together
+        # under the lock so a scrape never sees a mismatched pair.
         self.lock = threading.Lock()
+        self.devices: list[Device] = []
+        self.last_success = 0.0  # unix time of last good poll
+        self.last_duration = 0.0
+        self.errors = 0
 
     def _get(self, path: str) -> requests.Response:
         resp = self.session.get(self.base + path, timeout=self.timeout)
@@ -261,49 +275,71 @@ class Target:
         log.info("%s: detected %s firmware", self.address, self.firmware)
 
     def fetch(self) -> list[Device]:
-        # Embedded web servers are slow and single-threaded; never overlap
-        # requests to the same device.
+        if self.firmware is None:
+            self._detect()
+        try:
+            if self.firmware == "v5":
+                return parse_v5(self._get("/api/dev").json(), self.name, self.model)
+            return parse_v3(self._get("/data.xml").text, self.name)
+        except (requests.HTTPError, ValueError, ET.ParseError):
+            self.firmware = None  # unexpected payload: re-detect next time
+            raise
+
+    def poll_once(self) -> None:
+        start = time.monotonic()
+        try:
+            devices = self.fetch()
+        except Exception as e:  # noqa: BLE001 - keep polling whatever happens
+            self.errors += 1
+            log.warning("%s: poll failed: %s", self.address, e)
+        else:
+            with self.lock:
+                self.devices = devices
+                self.last_success = time.time()
+        self.last_duration = time.monotonic() - start
+
+    def run(self, interval: float, stop: threading.Event) -> None:
+        # One request at a time per PDU: these embedded web servers are slow
+        # and single-threaded. Sleep is measured from the start of each poll.
+        while not stop.is_set():
+            start = time.monotonic()
+            self.poll_once()
+            stop.wait(max(0.0, interval - (time.monotonic() - start)))
+
+    def snapshot(self) -> tuple[list[Device], float]:
         with self.lock:
-            if self.firmware is None:
-                self._detect()
-            try:
-                if self.firmware == "v5":
-                    return parse_v5(self._get("/api/dev").json(), self.name, self.model)
-                return parse_v3(self._get("/data.xml").text, self.name)
-            except (requests.HTTPError, ValueError, ET.ParseError):
-                self.firmware = None  # unexpected payload: re-detect next time
-                raise
+            return self.devices, self.last_success
 
 
 class PDUCollector(Collector):
-    def __init__(self, targets: list[Target]):
+    def __init__(self, targets: list[Target], max_age: float):
         self.targets = targets
-        self.pool = ThreadPoolExecutor(max_workers=max(1, len(targets)))
+        self.max_age = max_age
 
     def describe(self):
         # Without this, REGISTRY.register() calls collect() to discover metric
-        # names, i.e. scrapes every PDU before the HTTP server even starts.
+        # names before the HTTP server even starts.
         return []
-
-    @staticmethod
-    def _scrape(target: Target):
-        start = time.monotonic()
-        try:
-            devices, ok = target.fetch(), True
-        except Exception as e:  # noqa: BLE001 - any failure means "down"
-            log.warning("%s: scrape failed: %s", target.address, e)
-            devices, ok = [], False
-        return target, devices, ok, time.monotonic() - start
 
     def collect(self):
         up = GaugeMetricFamily(
             "pdu_up",
-            "Whether the last scrape of the PDU succeeded",
+            "Whether a reading newer than PDU_MAX_AGE is available for the PDU",
             labels=["address", "firmware"],
+        )
+        last_success = GaugeMetricFamily(
+            "pdu_last_success_timestamp_seconds",
+            "Unix time of the last successful poll of the PDU",
+            labels=["address"],
         )
         duration = GaugeMetricFamily(
             "pdu_scrape_duration_seconds",
-            "Time taken to scrape the PDU",
+            "Time taken by the last poll of the PDU",
+            labels=["address"],
+        )
+        errors = CounterMetricFamily(
+            "pdu_poll_errors",
+            "Failed polls of the PDU since the exporter started",
             labels=["address"],
         )
         dev_fams = {
@@ -318,9 +354,17 @@ class PDUCollector(Collector):
             "pdu_outlet_status", "Outlet status", labels=OUTLET_LABELS
         )
 
-        for target, devices, ok, took in self.pool.map(self._scrape, self.targets):
-            up.add_metric([target.address, target.firmware or ""], 1 if ok else 0)
-            duration.add_metric([target.address], took)
+        now = time.time()
+        for target in self.targets:
+            devices, ts = target.snapshot()
+            fresh = ts > 0 and now - ts <= self.max_age
+            up.add_metric([target.address, target.firmware or ""], 1 if fresh else 0)
+            if ts:
+                last_success.add_metric([target.address], ts)
+            duration.add_metric([target.address], target.last_duration)
+            errors.add_metric([target.address], target.errors)
+            if not fresh:
+                continue
             for dev in devices:
                 dlabels = [dev.pdu, dev.id, dev.type]
                 for metric, val in dev.values.items():
@@ -335,7 +379,9 @@ class PDUCollector(Collector):
                         )
 
         yield up
+        yield last_success
         yield duration
+        yield errors
         yield from dev_fams.values()
         yield from out_fams.values()
         yield status
@@ -358,17 +404,27 @@ def main():
     if not raw:
         raise SystemExit("Set PDU_TARGETS (comma separated, optional name=address)")
     port = int(os.getenv("PDU_PORT", "80"))
-    timeout = float(os.getenv("PDU_REQUEST_TIMEOUT", "4"))
+    timeout = float(os.getenv("PDU_REQUEST_TIMEOUT", "20"))
+    interval = float(os.getenv("POLLING_INTERVAL_SECONDS", "10"))
+    max_age = float(os.getenv("PDU_MAX_AGE", "60"))
     listen = int(os.getenv("LISTEN_PORT", "9100"))
 
     targets = [Target(addr, name, port, timeout) for addr, name in parse_targets(raw)]
-    REGISTRY.register(PDUCollector(targets))
-    start_http_server(listen)
-    log.info("Listening on :%d for %s", listen, ", ".join(t.address for t in targets))
-
     stop = threading.Event()
     signal.signal(signal.SIGTERM, lambda *_: stop.set())
     signal.signal(signal.SIGINT, lambda *_: stop.set())
+
+    for t in targets:
+        threading.Thread(
+            target=t.run, args=(interval, stop), name=f"poll-{t.address}", daemon=True
+        ).start()
+
+    REGISTRY.register(PDUCollector(targets, max_age))
+    start_http_server(listen)
+    log.info(
+        "Listening on :%d, polling %s every %gs",
+        listen, ", ".join(t.address for t in targets), interval,
+    )
     stop.wait()
 
 
