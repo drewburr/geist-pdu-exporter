@@ -9,8 +9,7 @@ on:
     tags: ["*.*.*"]
     paths:
       - "src/**"
-      - "poetry.lock"
-      - "pyProject.toml"
+      - "requirements.txt"
       - ".dockerignore"
       - "Dockerfile"
   pull_request:
