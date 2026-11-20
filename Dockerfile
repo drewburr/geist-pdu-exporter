@@ -1,12 +1,17 @@
-FROM python:3.11
+FROM python:3.13-slim
 
-WORKDIR /usr/src/app
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
 
-RUN pip install poetry
+WORKDIR /app
 
-COPY poetry.lock pyproject.toml ./
-RUN poetry install --no-root --no-cache
+COPY requirements.txt ./
+RUN pip install --no-cache-dir -r requirements.txt
 
-COPY ./src ./
+COPY src/ ./
 
-CMD ["poetry", "run", "python", "main.py"]
+# Run rootless; numeric UID so runAsNonRoot can verify it.
+USER 65532:65532
+EXPOSE 9100
+
+CMD ["python", "main.py"]
