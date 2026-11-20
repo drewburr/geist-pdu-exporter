@@ -8,9 +8,12 @@ number of PDUs, and auto-detects the firmware family of each:
 | v3 (RCU-O, "GEIST Embedded Web Server") | `RCU-O v3.16.3` | `/data.xml` |
 | v5+ (R-Series, `httpd 5.x`) | `5.8.0` | `/api/sys`, `/api/dev` (JSON) |
 
-PDUs are queried at scrape time, so the Prometheus scrape interval is the
-polling interval. Both firmwares allow unauthenticated reads, so no
-credentials are needed.
+Each PDU is polled by its own background thread (one request at a time) and
+scrapes return the latest reading instantly, so a slow PDU never fails a
+Prometheus scrape. Some v3 units stop answering for several seconds every
+5 minutes; with scrape-time collection that showed up as regular gaps.
+Readings older than `PDU_MAX_AGE` are dropped and `pdu_up` goes to 0.
+Both firmwares allow unauthenticated reads, so no credentials are needed.
 
 ## Configuration
 
@@ -18,7 +21,9 @@ credentials are needed.
 | --- | --- | --- |
 | `PDU_TARGETS` | — | Comma-separated addresses, optionally `name=address` to override the `pdu` label (default: the hostname/label the PDU reports). `PDU_ADDRESS` is accepted as a legacy alias. |
 | `PDU_PORT` | `80` | HTTP port on the PDUs |
-| `PDU_REQUEST_TIMEOUT` | `4` | Per-request timeout, seconds. Keep it below the scrape timeout. |
+| `POLLING_INTERVAL_SECONDS` | `10` | How often each PDU is polled |
+| `PDU_REQUEST_TIMEOUT` | `20` | Per-request timeout, seconds (applies to connect and read separately) |
+| `PDU_MAX_AGE` | `60` | Seconds a reading stays valid; older readings are dropped |
 | `LISTEN_PORT` | `9100` | Exporter listen port |
 | `LOG_LEVEL` | `INFO` | Python log level |
 
@@ -33,8 +38,10 @@ All PDU metrics carry `pdu`, `id` and `type` labels; outlet metrics add
 
 | Metric | Notes |
 | --- | --- |
-| `pdu_up{address,firmware}` | 1 if the last scrape of that PDU succeeded |
-| `pdu_scrape_duration_seconds{address}` | |
+| `pdu_up{address,firmware}` | 1 if a reading newer than `PDU_MAX_AGE` is available |
+| `pdu_last_success_timestamp_seconds{address}` | Unix time of the last successful poll |
+| `pdu_scrape_duration_seconds{address}` | Duration of the last poll |
+| `pdu_poll_errors_total{address}` | Failed polls since start; `increase()` shows how often a PDU stalls |
 | `pdu_kwh_total`, `pdu_kwh` | Device energy, total and phase A |
 | `pdu_realpower_total`, `pdu_realpower` | Real power (W) |
 | `pdu_volts`, `pdu_amps`, `pdu_apparent_power`, `pdu_power_factor_percent` | Phase A |
